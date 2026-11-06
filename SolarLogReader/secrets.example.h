@@ -51,7 +51,7 @@ const uint8_t SD_CS_PIN    = 4;
 const uint8_t CS_SENSE_PIN = 5;
 
 // ---------------- Verhalten ----------------
-const uint32_t READ_INTERVAL_MS  = 5000;
+const uint32_t READ_INTERVAL_MS  = 10000;
 const uint8_t MAX_LINES_PER_LOOP = 20;
 
 // Ab dieser Dateigroesse wird die Datei geleert (1,5 GB in Byte):
