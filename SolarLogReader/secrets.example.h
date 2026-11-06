@@ -54,8 +54,10 @@ const uint8_t CS_SENSE_PIN = 5;
 const uint32_t READ_INTERVAL_MS  = 10000;
 const uint8_t MAX_LINES_PER_LOOP = 20;
 
-// Ab dieser Dateigroesse wird die Datei geleert (1,5 GB in Byte):
+// Notausgang: Ab dieser Dateigroesse wird die Datei geleert (1,5 GB in Byte).
+// Bei ~1 MB pro Monat praktisch nie erreichbar - reine Absicherung.
 const uint32_t MAX_FILE_SIZE_BYTES = 1500UL * 1024UL * 1024UL;
+
 
 // Monats-Log: WE + JJMM + .DAT, z.B. WE2611.DAT = Nov 2026.
 // Der ESP baut den Namen aus der Uhrzeit (NTP) selbst.

@@ -1047,27 +1047,6 @@ void updateActiveFile() {
   }
 }
 
-bool resetFile() {
-  Serial.println(F("[SD] Reset: Datei wird geleert..."));
-  updateActiveFile();
-  if (SD.exists(currentLogFile.c_str())) {
-    if (!SD.remove(currentLogFile.c_str())) {
-      Serial.println(F("[SD] FEHLER: remove() schlug fehl"));
-      return false;
-    }
-  }
-  File f = SD.open(currentLogFile.c_str(), FILE_WRITE);
-  if (!f) {
-    Serial.println(F("[SD] FEHLER: Datei konnte nicht neu angelegt werden"));
-    return false;
-  }
-  f.close();
-  saveReadPosition(0);
-  mqtt.publish(MQTT_TOPIC_STATUS, "{\"reset\":true,\"reason\":\"1.5GB erreicht, Datei geleert\"}");
-  Serial.println(F("[SD] Datei geleert, Position=0"));
-  return true;
-}
-
 // ---------- Setup / Loop ----------
 void setup() {
   Serial.begin(115200);
@@ -1109,6 +1088,30 @@ void setup() {
   Serial.println(MAX_FILE_SIZE_BYTES);
   Serial.print(F("[CFG] Start-Position: "));
   Serial.println(loadReadPosition());
+}
+
+// Notausgang: Wird eine einzelne Logdatei doch einmal 1,5 GB gross (z. B. wenn
+// die Monatsloeschung nie greift), wird sie geleert. Bei ~1 MB pro Monat
+// passiert das praktisch nie.
+bool resetFile() {
+  Serial.println(F("[SD] Reset: Datei wird geleert..."));
+  updateActiveFile();
+  if (SD.exists(currentLogFile.c_str())) {
+    if (!SD.remove(currentLogFile.c_str())) {
+      Serial.println(F("[SD] FEHLER: remove() schlug fehl"));
+      return false;
+    }
+  }
+  File f = SD.open(currentLogFile.c_str(), FILE_WRITE);
+  if (!f) {
+    Serial.println(F("[SD] FEHLER: Datei konnte nicht neu angelegt werden"));
+    return false;
+  }
+  f.close();
+  saveReadPosition(0);
+  mqtt.publish(MQTT_TOPIC_STATUS, "{\"reset\":true,\"reason\":\"1.5GB erreicht, Datei geleert\"}");
+  Serial.println(F("[SD] Datei geleert, Position=0"));
+  return true;
 }
 
 void loop() {

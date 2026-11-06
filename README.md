@@ -315,8 +315,16 @@ wartet dann 20 Sekunden und versucht es später erneut. Zwischen den Zugriffen
 gibt er MISO/MOSI/SCK wieder frei — der Regler merkt nichts vom Mitleser.
 
 **Aufgeräumt wird auch.**
-Bei 1,5 GB wird die Datei geleert, beim Monatswechsel werden **ältere**
-Monatsdateien gelöscht (die aktuelle nie).
+Es bleibt immer nur die Datei des **aktuellen Monats**. Beim Monatswechsel wird
+die Datei des Vormonats gelöscht (im Dezember also `WE2611.DAT`) — die Zeilen
+der laufenden Datei bleiben komplett erhalten, damit du später noch nachschauen
+kannst. 4320 Zeilen pro Monat sind etwa **1 MB**; die 2-GB-Karte reicht damit
+rechnerisch für Jahrhunderte.
+
+> [!NOTE]
+> Als reiner Notausgang: Erreicht eine einzelne Datei doch einmal **1,5 GB**
+> (`MAX_FILE_SIZE_BYTES` in `secrets.h`), wird sie geleert. Bei 1 MB pro Monat
+> passiert das nie — die Sicherung ist nur da, damit die Karte nicht vollläuft.
 
 **Kein Cloud-Dienst.**
 Alles läuft im lokalen Netz: ESP → MQTT-Broker → Home Assistant.
