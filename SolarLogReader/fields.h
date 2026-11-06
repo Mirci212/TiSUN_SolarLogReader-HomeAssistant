@@ -1,0 +1,62 @@
+// fields.h - TiSUN MULTIPLEX: Spalten aus WE2611.DAT, abgeglichen mit dem Display
+//
+// Logzeile 18:30 : 1106;1830;10;46;199;30;199;-40;-40;-40;-40;-40;-40;0.0;0.0;0;0;...;183297;023977;25;1.5;...;EU;6123;...
+// Display        : T1= 5C  T2=46C  T3=199C (Ausser Betrieb)  T4=29C  T5=199C (Ausser Betrieb)
+//                  P1=0%  Leistung 0.0kW  Energie 183297kWh  Betrieb 23977h  dT 0C
+//
+// Daraus folgt sicher:
+//   0 = Datum MMDD (1106), 1 = Uhrzeit HHMM (1830)
+//   2..6 = T1..T5 ROH in Grad Celsius -> KEIN Teiler (divider 1)!
+//          Gegenprobe: T2 = 46 im Log = 46 C am Display, T3/T5 = 199 = "Ausser Betrieb",
+//          T4 = 30 im Log / 29 C am Display (1 Grad Drift ueber den Tag).
+//   25 = Energie in kWh (183297), 26 = Betriebsstunden (23977) - beide 1:1
+//   7..12 = -40 = Fuehler nicht belegt (wird nicht veroeffentlicht)
+//   13 = dT, 14 = Leistung kW (beide 0.0 am Display), 15 = P1 in %
+//   27 = 25 / 28 = 1.5 -> beide UNBEKANNT und daher nicht gemappt:
+//       Spalte 28 ist in jeder Zeile 1.5, auch wenn P1 = 0 % (Pumpe steht)
+//       und Leistung 0.0 kW ist. Ein Durchfluss muesste dann 0 sein, das
+//       Display zeigt als festen Flowmeter-Wert 6.5 -> 1.5 passt nicht.
+//       Namen bewusst nur "Solar T1..T5", Rollen (Boiler/Puffer) stehen am
+//       Geraet auf dem Aufkleber, nicht im Sensornamen.
+//   39 = EU (Sprache), 40 = 6123 (Variante), Rest Status/Timer
+//
+// lo/hi = Plausibilitaet: alles ausserhalb wird NICHT gesendet (Topic wird
+// geleert), damit 199 ("Ausser Betrieb") oder -40 ("unbelegt") nicht als
+// Messwert im Diagramm landen. 0/0 = keine Grenze.
+//
+// Umbenennen ohne Reflash (Topic home/solarlog/set_config):
+//   {"index":4,"key":"t_kollektor","name":"Kollektor","unit":"°C","divider":1,"min":-35,"max":150}
+// Min/Max gelten zur Laufzeit (nicht im EEPROM); nach Reboot kommen die
+// Grenzen unten wieder. {"cmd":"list"} zeigt alle Felder inkl. min/max.
+
+#ifndef FIELDS_H
+#define FIELDS_H
+
+struct FieldDef {
+  uint8_t index;
+  const char* key;
+  const char* name;
+  const char* unit;
+  float divider; // 0 = ganzzahlig roh, 1/10/... = durch diesen Wert teilen
+  float lo;      // Plausibilitaet min
+  float hi;      // Plausibilitaet max
+};
+
+static const FieldDef FIELDS[] = {
+  { 0,  "datum",      "Solar Datum",        "",      0, 0,     0 },
+  { 1,  "uhrzeit",    "Solar Uhrzeit",      "",      0, 0,     0 },
+  { 2,  "t1",         "Solar T1",           "°C",    1, -35, 150 },
+  { 3,  "t2",         "Solar T2",           "°C",    1, -35, 150 },
+  { 4,  "t3",         "Solar T3",           "°C",    1, -35, 150 },
+  { 5,  "t4",         "Solar T4",           "°C",    1, -35, 150 },
+  { 6,  "t5",         "Solar T5",           "°C",    1, -35, 150 },
+  { 13, "dt",         "Solar dT",           "K",     1, -35, 150 },
+  { 14, "leistung",   "Solar Leistung",     "kW",    1, 0,   200 },
+  { 15, "p1",         "Solar P1",           "%",     0, 0,   100 },
+  { 25, "energie",    "Solar Energie",      "kWh",   0, 0,   2000000 },
+  { 26, "betrieb",    "Solar Betrieb",      "h",     0, 0,   200000 },
+};
+
+static const uint8_t NUM_FIELDS = sizeof(FIELDS) / sizeof(FIELDS[0]);
+
+#endif

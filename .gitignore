@@ -1,0 +1,6 @@
+# Zugangsdaten - niemals ins Repository
+secrets.h
+
+# Build-Artefakte der Arduino IDE
+*.bin
+build/
