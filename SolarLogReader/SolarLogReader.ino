@@ -1,6 +1,6 @@
 // SolarLogReader.ino
 // ESP8285 (Generic ESP8285 Module) + FYSETC SD WiFi Card Reader V2.1
-// + TiSun MULTIPLEX -> MQTT -> Home Assistant
+// + TiSUN MULTIPLEX -> MQTT -> Home Assistant
 //
 // Remote-Funktion (ohne Rausziehen):
 //  Namen per MQTT aendern: Topic home/solarlog/set_config
@@ -70,6 +70,9 @@ void publishConfigState(const String& info);
 // es die Feld-Config (Namen/Units kaputt).
 #define EEPROM_LINES_ADDR 8
 
+// Herstellername in allen MQTT-Discovery-Payloads (Geraeteseite in HA)
+#define MANUFACTURER_NAME "TiSUN"
+
 // Wie oft die letzte Zeile der Datei geprueft wird (unabhaengig von lastPos).
 #ifndef TAIL_CHECK_MS
 #define TAIL_CHECK_MS 10000UL
@@ -79,12 +82,14 @@ void publishConfigState(const String& info);
 #define KEY_LEN 20
 #define NAME_LEN 36
 #define UNIT_LEN 8
+#define ICON_LEN 32
 
 struct RtField {
   uint8_t index;
   char key[KEY_LEN];
   char name[NAME_LEN];
   char unit[UNIT_LEN];
+  char icon[ICON_LEN];  // mdi-Name fuer HA (RAM, Default aus fields.h)
   float divider;
   float lo;      // Plausibilitaet (nur RAM, Defaults aus fields.h)
   float hi;
@@ -168,13 +173,18 @@ void saveReadPosition(uint32_t pos) {
 
 // ---------- Runtime-Felder (remote aenderbar) ----------
 // Grenzen aus fields.h zum Spaltenindex suchen (0/0 = keine Grenze)
+// Setzt Grenzen UND Icon aus fields.h (gilt auch nach dem Laden aus EEPROM,
+// weil das Icon bewusst nicht im EEPROM liegt).
 void applyDefaultLimits(RtField &f) {
   f.lo = 0;
   f.hi = 0;
+  f.icon[0] = 0;
   for (uint8_t k = 0; k < NUM_FIELDS; k++) {
     if (FIELDS[k].index == f.index) {
       f.lo = FIELDS[k].lo;
       f.hi = FIELDS[k].hi;
+      strncpy(f.icon, FIELDS[k].icon, ICON_LEN - 1);
+      f.icon[ICON_LEN - 1] = 0;
       return;
     }
   }
@@ -190,6 +200,8 @@ void copyDefaultsToRt() {
     rtFields[i].name[NAME_LEN - 1] = 0;
     strncpy(rtFields[i].unit, FIELDS[i].unit, UNIT_LEN - 1);
     rtFields[i].unit[UNIT_LEN - 1] = 0;
+    strncpy(rtFields[i].icon, FIELDS[i].icon, ICON_LEN - 1);
+    rtFields[i].icon[ICON_LEN - 1] = 0;
     rtFields[i].divider = FIELDS[i].divider;
     rtFields[i].lo = FIELDS[i].lo;
     rtFields[i].hi = FIELDS[i].hi;
@@ -331,6 +343,7 @@ void publishConfigState(const String& info) {
     json += String(",\"key\":\"") + rtFields[i].key + "\"";
     json += String(",\"name\":\"") + rtFields[i].name + "\"";
     json += String(",\"unit\":\"") + rtFields[i].unit + "\"";
+    json += String(",\"icon\":\"") + rtFields[i].icon + "\"";
     json += String(",\"divider\":") + String(rtFields[i].divider, 2);
     json += String(",\"min\":") + String(rtFields[i].lo, 1);
     json += String(",\"max\":") + String(rtFields[i].hi, 1) + "}";
@@ -382,6 +395,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
   String nkey = extractJsonString(msg, "key");
   String nname = extractJsonString(msg, "name");
   String nunit = extractJsonString(msg, "unit");
+  String nicon = extractJsonString(msg, "icon");
   float ndiv;
   bool hasDiv = extractJsonFloat(msg, "divider", ndiv);
   float nlo, nhi;
@@ -395,6 +409,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
     if (nkey.length() > 0) { strncpy(rtFields[pos].key, nkey.c_str(), KEY_LEN - 1); rtFields[pos].key[KEY_LEN-1]=0; }
     if (nname.length() > 0) { strncpy(rtFields[pos].name, nname.c_str(), NAME_LEN - 1); rtFields[pos].name[NAME_LEN-1]=0; }
     if (msg.indexOf("\"unit\"") >= 0) { strncpy(rtFields[pos].unit, nunit.c_str(), UNIT_LEN - 1); rtFields[pos].unit[UNIT_LEN-1]=0; }
+    if (msg.indexOf("\"icon\"") >= 0) { strncpy(rtFields[pos].icon, nicon.c_str(), ICON_LEN - 1); rtFields[pos].icon[ICON_LEN-1]=0; }
     if (hasDiv) rtFields[pos].divider = ndiv;
     if (hasLo) rtFields[pos].lo = nlo;
     if (hasHi) rtFields[pos].hi = nhi;
@@ -415,6 +430,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
     if (nname.length() > 0) strncpy(rtFields[freeSlot].name, nname.c_str(), NAME_LEN - 1);
     else snprintf(rtFields[freeSlot].name, NAME_LEN, "Solar Feld %d", fidx);
     strncpy(rtFields[freeSlot].unit, nunit.c_str(), UNIT_LEN - 1); rtFields[freeSlot].unit[UNIT_LEN-1]=0;
+    if (nicon.length() > 0) { strncpy(rtFields[freeSlot].icon, nicon.c_str(), ICON_LEN - 1); rtFields[freeSlot].icon[ICON_LEN-1]=0; }
     rtFields[freeSlot].divider = hasDiv ? ndiv : 0;
     applyDefaultLimits(rtFields[freeSlot]);
     if (hasLo) rtFields[freeSlot].lo = nlo;
@@ -525,9 +541,12 @@ void publishDiscoverySingle(uint8_t rtIdx) {
   String payload = String("{\"name\":\"") + f.name + "\",";
   payload += String("\"state_topic\":\"") + stateTopic + "\",";
   payload += String("\"unique_id\":\"solarlog_") + f.key + "\",";
-  payload += String("\"device\":{\"identifiers\":[\"fysetc-solarlog\"],\"name\":\"Solarlog\",\"manufacturer\":\"TiSun\"},");
+  payload += String("\"device\":{\"identifiers\":[\"fysetc-solarlog\"],\"name\":\"Solarlog\",\"manufacturer\":\"") + MANUFACTURER_NAME + String("},");
   if (strlen(f.unit) > 0) {
     payload += String("\"unit_of_measurement\":\"") + f.unit + "\",";
+  }
+  if (strlen(f.icon) > 0) {
+    payload += String("\"icon\":\"") + f.icon + "\",";
   }
   payload += String("\"value_template\":\"{{ value }}\"}");
   mqtt.publish(discTopic.c_str(), payload.c_str(), true);
@@ -664,7 +683,7 @@ void teleDisc(const char* key, const char* name, const char* stateTopic, const c
   String p = String("{\"name\":\"") + name + "\",";
   p += String("\"state_topic\":\"") + stateTopic + "\",";
   p += String("\"unique_id\":\"solarlog_") + key + "\",";
-  p += String("\"device\":{\"identifiers\":[\"fysetc-solarlog\"],\"name\":\"Solarlog\",\"manufacturer\":\"TiSun\"}");
+  p += String("\"device\":{\"identifiers\":[\"fysetc-solarlog\"],\"name\":\"Solarlog\",\"manufacturer\":\"") + MANUFACTURER_NAME + String("}");
   if (unit && strlen(unit) > 0) p += String(",\"unit_of_measurement\":\"") + unit + "\"";
   if (devClass && strlen(devClass) > 0) p += String(",\"device_class\":\"") + devClass + "\"";
   p += String(",\"value_template\":\"{{ value }}\"}");
@@ -681,12 +700,25 @@ void publishTelemetryDiscovery() {
   teleDisc("rssi", "Solarlog WLAN", MQTT_TOPIC_RSSI, "dBm", "signal_strength");
   teleDisc("uptime", "Solarlog Start", MQTT_TOPIC_UPTIME, "", "timestamp");
   teleDisc("heap", "Solarlog Heap", MQTT_TOPIC_HEAP, "B", "data_size");
-  // Diagnose: die Zeile, aus der die Messzeit kommt
-  teleDisc("last_line", "Solarlog Letzte Rohzeile", MQTT_TOPIC_LASTLINE, "", "");
+
 }
+
+// Telemetrie (RSSI, Heap, Dateigroesse, Leseposition) NICHT bei jedem Poll
+// senden: nur bei Aenderung oder alle 10 Minuten. Das spart WLAN-Traffic, CPU
+// und damit Waerme - der ESP funkt nur noch, wenn es sein muss.
+#define TELEMETRY_INTERVAL_MS 600000UL
 
 void publishTelemetry(uint32_t fileSize, uint32_t lastPos) {
   if (!mqtt.connected() || WiFi.status() != WL_CONNECTED) return;
+  static uint32_t lastSent = 0;
+  static uint32_t lastSize = 0xFFFFFFFFUL;
+  static uint32_t lastPosSent = 0xFFFFFFFFUL;
+  bool changed = (fileSize != lastSize) || (lastPos != lastPosSent);
+  bool due = (lastSent == 0) || ((uint32_t)(millis() - lastSent) >= TELEMETRY_INTERVAL_MS);
+  if (!changed && !due) return;
+  lastSent = millis();
+  lastSize = fileSize;
+  lastPosSent = lastPos;
   String ip = WiFi.localIP().toString();
   if (lastRefreshIso.length() == 0) lastRefreshIso = nowIso();
   mqtt.publish(MQTT_TOPIC_IP, ip.c_str(), true);
@@ -719,6 +751,10 @@ void publishDiscovery() {
   // Werten stehen): Zeilen-Zaehler und der falsch gemappte Durchfluss.
   mqtt.publish("homeassistant/sensor/solarlog_lines_total/config", "", true);
   mqtt.publish("homeassistant/sensor/solarlog_durchfluss/config", "", true);
+  // Die Diagnose-Entity "Letzte Rohzeile" gibt es nicht mehr -> Reste aus
+  // Home Assistant und den retained Wert entfernen.
+  mqtt.publish("homeassistant/sensor/solarlog_last_line/config", "", true);
+  mqtt.publish("home/solarlog/last_line", "", true);
   // Eigene IP als eigener HA-Sensor (Remote ablesbar)
   {
     String discTopic = "homeassistant/sensor/solarlog_ip/config";
@@ -726,7 +762,7 @@ void publishDiscovery() {
     payload += String("\"state_topic\":\"") + MQTT_TOPIC_IP + "\",";
     payload += String("\"unique_id\":\"solarlog_ip\",");
     payload += String("\"icon\":\"mdi:ip-network\",");
-    payload += String("\"device\":{\"identifiers\":[\"fysetc-solarlog\"],\"name\":\"Solarlog\",\"manufacturer\":\"TiSun\"}");
+    payload += String("\"device\":{\"identifiers\":[\"fysetc-solarlog\"],\"name\":\"Solarlog\",\"manufacturer\":\"") + MANUFACTURER_NAME + String("}");
     payload += String(",\"value_template\":\"{{ value }}\"}");
     mqtt.publish(discTopic.c_str(), payload.c_str(), true);
   }
@@ -821,7 +857,6 @@ void refreshFromTail() {
   lastTailLine = line;
   Serial.print(F("[SD] neue letzte Zeile: "));
   Serial.println(line);
-  mqtt.publish(MQTT_TOPIC_LASTLINE, line.c_str(), true);
   publishFields(line);
   String mt = measIsoFromLine(line);
   if (mt.length() > 0) {
@@ -905,9 +940,6 @@ void mqttPublishLine(const String& line, uint32_t pos) {
   String clean = line;
   clean.trim();
   if (clean.length() == 0) return;
-  // Rohzeile mitschicken: damit ist nachvollziehbar, woher Messzeit und
-  // Werte kommen (Spalte 0/1 = Datum/Uhrzeit).
-  mqtt.publish(MQTT_TOPIC_LASTLINE, clean.c_str(), true);
   publishFields(clean);
   String mtime = measIsoFromLine(clean);
   if (mtime.length() > 0) {

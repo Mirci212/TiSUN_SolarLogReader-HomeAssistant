@@ -1,8 +1,12 @@
-# TiSun MULTIPLEX → MQTT → Home Assistant
+<p align="center">
+  <img src="img/tisun-logo.png" alt="TiSUN" width="220">
+</p>
 
-<img src="img/regler-uebersicht.jpg" alt="TiSun MULTIPLEX mit FYSETC-Reader" width="300" align="right">
+# TiSUN MULTIPLEX → MQTT → Home Assistant
 
-**Solarwerte vom TiSun MULTIPLEX direkt in Home Assistant — ohne Cloud, ohne YAML, ohne OTA.**
+<img src="img/regler-uebersicht.jpg" alt="TiSUN MULTIPLEX mit FYSETC-Reader" width="300" align="right">
+
+**Solarwerte vom TiSUN MULTIPLEX direkt in Home Assistant — ohne Cloud, ohne YAML, ohne OTA.**
 
 Ein ESP8285 auf einem **FYSETC SD WiFi Card Reader V2.1** liest die Logdatei des
 Reglers von der SD-Karte, schickt jede **neue** Messzeile per MQTT an Home
@@ -15,11 +19,16 @@ per USB**.
 ![MQTT](https://img.shields.io/badge/MQTT-Home%20Assistant-18BCF2?logo=homeassistant&logoColor=white)
 ![Kein OTA](https://img.shields.io/badge/Update-nur%20per%20USB-lightgrey)
 
+📖 [TiSUN MULTIPLEX Handbuch](https://www.manualslib.de/manual/527539/Tisun-Multiplex-Advanced.html) ·
+🏢 [TiSUN GmbH](https://at.linkedin.com/company/tisun-gmbh) ·
+🛒 [FYSETC SD-Reader](https://de.aliexpress.com/item/1005007594254365.html) ·
+💾 [2-GB-microSD](https://www.ebay.de/itm/177224114334?var=476882283211)
+
 ---
 
 ## Warum das Ganze?
 
-Mein TiSun MULTIPLEX hat eine **RJ45-Netzwerkbuchse** für die PC-Software.
+Mein TiSUN MULTIPLEX hat eine **RJ45-Netzwerkbuchse** für die PC-Software.
 Darüber kam bei mir keine Verbindung zustande — die Daten waren einfach nicht
 erreichbar. Also habe ich den zweiten Weg genommen, den der Regler anbietet:
 
@@ -31,7 +40,7 @@ sieht weiterhin seine Karte, der ESP hängt am selben SPI-Bus und liest mit —
 **ohne** dass etwas am Regler umgebaut oder geflasht werden muss.
 
 ```
-TiSun MULTIPLEX ──SD-Bus──► FYSETC SD-Reader (ESP8285) ──WLAN──► MQTT ──► Home Assistant
+TiSUN MULTIPLEX ──SD-Bus──► FYSETC SD-Reader (ESP8285) ──WLAN──► MQTT ──► Home Assistant
                                    │
                                    └─ liest nur, wenn der Regler nicht schreibt
 ```
@@ -76,7 +85,7 @@ das Display zeigt weiterhin die Anlage:
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="img/regler-uebersicht.jpg" alt="TiSun MULTIPLEX mit Hydraulikschema"><br>
+      <img src="img/regler-uebersicht.jpg" alt="TiSUN MULTIPLEX mit Hydraulikschema"><br>
       <sub><b>Übersicht:</b> T1 5 °C, T2 46 °C, T4 29 °C, P1 0 %, 0,0 kW,
       183297 kWh — der Reader hängt rechts am Gerät.</sub>
     </td>
@@ -108,19 +117,19 @@ das Display zeigt weiterhin die Anlage:
   </tr>
 </table>
 
-In Home Assistant erscheint das Gerät **Solarlog** (Hersteller **TiSun**) mit
+In Home Assistant erscheint das Gerät **Solarlog** (Hersteller **TiSUN**) mit
 diesen Sensoren:
 
-| Sensor | Beispiel | Einheit |
-|---|---|---|
-| Solar Datum | `06.11.2026` | — |
-| Solar Uhrzeit | `18:40` | — |
-| Solar T1 … T5 | `5,0` / `46,0` / `29,0` | °C |
-| Solar dT | `0,0` | K |
-| Solar Leistung | `0,0` | kW |
-| Solar P1 | `0` | % |
-| Solar Energie | `183297` | kWh |
-| Solar Betrieb | `23977` | h |
+| Sensor | Beispiel | Einheit | Icon |
+|---|---|---|---|
+| Solar Datum | `06.11.2026` | — | `mdi:calendar` |
+| Solar Uhrzeit | `18:40` | — | `mdi:clock-outline` |
+| Solar T1 … T5 | `5` / `46` / `29` | °C | `mdi:storage-tank` |
+| Solar dT | `0` | K | `mdi:thermometer` |
+| Solar Leistung | `0` | kW | `mdi:solar-power` |
+| Solar P1 | `0` | % | `mdi:pump` |
+| Solar Energie | `183297` | kWh | `mdi:lightning-bolt` |
+| Solar Betrieb | `23977` | h | `mdi:counter` |
 | Solarlog Letzte Logzeile | `06.11.2026 18:40` | Zeitstempel |
 | Solarlog Letzter Refresh | wann der ESP gelesen hat | Zeitstempel |
 | Solarlog Start · IP · Datei · Dateigröße · Leseposition · WLAN · Heap | Diagnose | — |
@@ -135,11 +144,19 @@ diesen Sensoren:
 
 | Teil | Woher |
 |---|---|
-| **TiSun MULTIPLEX** Solarregler | vorhanden — schreibt `WEJJMM.DAT` auf die SD-Karte |
+| **TiSUN MULTIPLEX** Solarregler | vorhanden — schreibt `WEJJMM.DAT` auf die SD-Karte |
 | **FYSETC SD WiFi Card Reader V2.1** | [AliExpress](https://de.aliexpress.com/item/1005007594254365.html) |
-| microSD-Karte des Reglers | steckt im Regler, mit `WEJJMM.DAT` im Wurzelverzeichnis |
+| **microSD-Karte: genau 2 GB** | [2-GB-microSD bei eBay](https://www.ebay.de/itm/177224114334?var=476882283211) — **keine 4/8/16 GB**, siehe Warnung unten |
 | USB-Seriell-Adapter (3,3 V) | zum Flashen, meist am FYSETC-Board schon dran |
 | WLAN + MQTT-Broker | z. B. Home Assistant mit Mosquitto |
+
+> [!IMPORTANT]
+> **Nur eine 2-GB-microSD-Karte verwenden!**
+> Bei 4 GB und größeren Karten hängt sich der TiSUN-Regler auf und schreibt
+> **keine** Daten mehr auf die SD-Karte. Das ist keine Empfehlung, sondern
+> Voraussetzung — auch wenn die Karte noch so gut passt.
+>
+> Geeignete Karte: **[2 GB microSD bei eBay](https://www.ebay.de/itm/177224114334?var=476882283211)**
 
 **Pinbelegung** (FYSETC V2.1, einstellbar in `secrets.h`):
 
@@ -287,6 +304,12 @@ Die Leseposition steht im EEPROM. Nach einem Neustart geht es genau dort weiter;
 alte Zeilen werden nicht erneut gesendet. Beim Start wird zusätzlich einmal die
 letzte Zeile ausgewertet, damit die Sensoren sofort gefüllt sind.
 
+**Funk nur, wenn es sein muss.**
+Messwerte gehen sofort raus, sobald eine neue Zeile da ist. Die Telemetrie
+(WLAN-Stärke, Heap, Dateigröße, Leseposition) wird dagegen nur bei Änderung oder
+alle **10 Minuten** gesendet (`TELEMETRY_INTERVAL_MS`) — der ESP funkt nicht im
+5-Sekunden-Takt, sondern bleibt dazwischen still.
+
 **Der Bus bleibt beim Regler.**
 `CS_SENSE` (GPIO 5) geht auf LOW, wenn der Regler auf die Karte zugreift. Der ESP
 wartet dann 20 Sekunden und versucht es später erneut. Zwischen den Zugriffen
@@ -317,6 +340,17 @@ HA zeigt Zeitstempel in der Liste relativ an („Vor 2 Minuten", „In 35 Sekund
 Der echte Wert steht in der Detailansicht. Ein Wert „in der Zukunft" heißt nur,
 dass die Uhr des Reglers ein paar Sekunden vorgeht.
 
+**Ganze Zahlen und Icons:** Alle Messwerte gehen als ganze Zahlen raus
+(`divider: 0` in `fields.h`) — `46`, nicht `46.0`. Das Icon jedes Sensors steht
+in der Discovery-Payload (`icon`) und ist damit auch per MQTT änderbar:
+
+```json
+{"index":15,"icon":"mdi:pump"}
+```
+
+Ein geändertes Icon gilt wie `min`/`max` nur bis zum Neustart; der Standard steht
+in `fields.h`.
+
 **Graue Sensoren sind Absicht:** `T3`/`T5` mit `199` („Außer Betrieb") oder
 `-40` (Fühler fehlt) werden nicht gesendet. Kommt der Fühler zurück, legt der
 ESP die Entity beim ersten gültigen Wert wieder an.
@@ -325,7 +359,7 @@ ESP die Entity beim ersten gültigen Wert wieder an.
 
 ## Die Spalten der Logdatei
 
-Die Bedeutung steht **nicht** im TiSun-Handbuch. Das Mapping wurde durch
+Die Bedeutung steht **nicht** im TiSUN-Handbuch. Das Mapping wurde durch
 Vergleich der Logzeile mit dem Display ermittelt:
 
 
@@ -340,7 +374,7 @@ Vergleich der Logzeile mit dem Display ermittelt:
 |---|---|---|---|
 | 0 | `1106` | Datum `MMDD` → `06.11.2026` | — |
 | 1 | `1830` | Uhrzeit `HHMM` → `18:30` | — |
-| 2–6 | `10;46;199;30;199` | `T1`…`T5`, **roh in °C** (kein Teiler) | −35…150 |
+| 2–6 | `10;46;199;30;199` | `T1`…`T5`, **roh in °C, ganzzahlig** (kein Teiler) | −35…150 |
 | 7–12 | `-40` | Fühler nicht belegt (nicht gemappt) | — |
 | 13 | `0.0` | `dT` in K | −35…150 |
 | 14 | `0.0` | `Leistung` in kW | 0…200 |
@@ -356,10 +390,21 @@ Namen und Grenzen stehen in `fields.h` und lassen sich **ohne Neufassung** per
 MQTT ändern — Topic `home/solarlog/set_config`:
 
 ```json
-{"index":4,"key":"kollektor","name":"Kollektor","unit":"°C","divider":1,"min":-35,"max":150}
+{"index":4,"key":"kollektor","name":"Kollektor","unit":"°C","divider":0,"min":-35,"max":150,"icon":"mdi:storage-tank"}
+
 {"cmd":"list"}
 {"cmd":"reset"}
 ```
+
+| Schlüssel | Bedeutung |
+|---|---|
+| `index` | Spalte in der Zeile, ab 0 (`1106;1830;…` → 0 = 1106) |
+| `key` | MQTT-Endung, nur Kleinbuchstaben/Unterstrich → `home/solarlog/<key>` |
+| `name` | Anzeigename in Home Assistant |
+| `unit` | z. B. `°C`, `%`, `kWh`, `""` |
+| `icon` | MDI-Name, z. B. `mdi:storage-tank`, `mdi:pump`, `mdi:lightning-bolt` (leer = kein Icon) |
+| `divider` | `0` = ganzzahlig, `10` = durch 10 teilen |
+| `min` / `max` | Plausibilitätsgrenzen; außerhalb wird **nicht** gesendet (nur zur Laufzeit) |
 
 Antwort kommt auf `home/solarlog/config_state`.
 
@@ -376,7 +421,6 @@ Alles unter `home/solarlog/`:
 | `datum`, `uhrzeit`, `t1`…`t5`, `dt`, `leistung`, `p1`, `energie`, `betrieb` | Messwerte | ja |
 | `meas_time` | Messzeit der letzten Logzeile (UTC) | ja |
 | `last_refresh` | wann der ESP zuletzt gelesen hat (UTC) | ja |
-| `last_line` | zuletzt gelesene Rohzeile (Diagnose) | ja |
 | `ip`, `file`, `size`, `pos`, `rssi`, `heap`, `uptime` | Telemetrie | ja |
 | `set_config` / `config_state` | Fernkonfiguration | nein |
 
@@ -403,11 +447,6 @@ Der Regler trennt seine Zeilen mit CR (`\r`), nicht mit LF. Der Sketch liest
 deshalb zeichenweise und trennt an CR **und** LF; die Leseposition bleibt auf der
 letzten vollständigen Zeile stehen. Zusätzlich wird alle 10 s die letzte Zeile
 der Datei geprüft (unabhängig von der Leseposition).
-
-**Zeit der „Letzten Logzeile" passt nicht zur Datei**
-Der Sensor `Solarlog Letzte Rohzeile` (`home/solarlog/last_line`) zeigt die Zeile,
-die der ESP wirklich gelesen hat. Beginnt sie mit `1106;2220`, dann steht genau
-das auf der Karte. Die Weboberfläche des Reglers kann älter sein als die Datei.
 
 **Sensoren bleiben „Unbekannt"**
 Werte werden retained gesendet. Kommt trotzdem nichts an, liefert der Regler
@@ -455,8 +494,9 @@ Home Assistant.
 
 ## Links
 
-- **TiSun MULTIPLEX Handbuch:** [manualslib.de](https://www.manualslib.de/manual/527539/Tisun-Multiplex-Advanced.html)
-- **TiSun GmbH:** [LinkedIn](https://at.linkedin.com/company/tisun-gmbh)
+- **TiSUN MULTIPLEX Handbuch:** [manualslib.de](https://www.manualslib.de/manual/527539/Tisun-Multiplex-Advanced.html)
+- **TiSUN GmbH (Logo/Hersteller):** [LinkedIn](https://at.linkedin.com/company/tisun-gmbh)
+- **2-GB-microSD-Karte (Pflicht):** [eBay](https://www.ebay.de/itm/177224114334?var=476882283211)
 - **FYSETC SD WiFi Card Reader V2.1:** [AliExpress](https://de.aliexpress.com/item/1005007594254365.html)
 - **ESP8266-Core für Arduino:** [arduino.esp8266.com](https://arduino.esp8266.com/stable/package_esp8266com_index.json)
 - **PubSubClient:** [github.com/knolleary/pubsubclient](https://github.com/knolleary/pubsubclient)
@@ -464,7 +504,7 @@ Home Assistant.
 
 ---
 
-*Gebaut für einen TiSun MULTIPLEX, der seine Daten partout nicht über die
+*Gebaut für einen TiSUN MULTIPLEX, der seine Daten partout nicht über die
 Netzwerkbuchse herausrücken wollte. Die SD-Karte tut es.*
 
 ---
