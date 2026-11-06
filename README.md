@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="img/tisun-logo.png" alt="TiSUN" width="220">
+  <img src="https://kcdn.at/company/16743/445293/logo-tisun-gmbh.gif" alt="TiSUN" width="220">
 </p>
 
 # TiSUN MULTIPLEX → MQTT → Home Assistant
