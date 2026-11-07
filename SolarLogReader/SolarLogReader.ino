@@ -73,8 +73,16 @@ String lastLineOfFile();
 #define EEPROM_LINES_ADDR 8
 
 // Wie oft die letzte Zeile der Datei geprueft wird (unabhaengig von lastPos).
+// 20 s statt 10 s: halbiert die SD-Zugriffe. Werte kommen trotzdem promptly an,
+// weil der Regler ohnehin nur alle paar Minuten eine neue Zeile schreibt.
 #ifndef TAIL_CHECK_MS
-#define TAIL_CHECK_MS 10000UL
+#define TAIL_CHECK_MS 20000UL
+#endif
+
+// Wie oft die Telemetrie (IP, Dateigroesse, Position, RSSI, Heap, Status)
+// gesendet wird. Vorher lief die bei jedem SD-Poll mit (~12 Publishes je Poll).
+#ifndef TELEMETRY_MS
+#define TELEMETRY_MS 1200000UL   // 20 min
 #endif
 
 #define MAX_RT_FIELDS 20
@@ -801,6 +809,17 @@ void publishTelemetry(uint32_t fileSize, uint32_t lastPos) {
   mqtt.publish(MQTT_TOPIC_STATUS, st.c_str(), false);
 }
 
+// Telemetrie drosseln: hoechstens alle TELEMETRY_MS senden, aber beim ersten
+// Aufruf nach dem Boot sofort (sonst blieben die retained Werte lange leer).
+void publishTelemetryThrottled(uint32_t size, uint32_t pos) {
+  static uint32_t lastMs = 0;
+  static bool init = false;
+  if (init && (millis() - lastMs < TELEMETRY_MS)) return;
+  init = true;
+  lastMs = millis();
+  publishTelemetry(size, pos);
+}
+
 void publishDiscovery() {
   // Bewusst KEINE Feld-Discovery beim Start: die entsteht erst mit dem ersten
   // gueltigen Wert (publishFields). Sonst legt HA Entities fuer Felder an, die
@@ -1274,7 +1293,7 @@ void loop() {
   Serial.print(F(" lastPos="));
   Serial.println(lastPos);
 
-  publishTelemetry(fileSize, lastPos);
+  publishTelemetryThrottled(fileSize, lastPos);
 
   // Letzte Zeile der Datei pruefen: beim Start sofort, danach zyklisch.
   // Vorher lief das nur einmal im Setup -> neue Werte kamen ausschliesslich
@@ -1344,7 +1363,7 @@ void loop() {
     Serial.println(F("[SD] noch mehr neue Zeilen, Rest naechsten Loop"));
   }
   saveLinesTotal(linesTotal);
-  publishTelemetry(fileSize, lastPos);
+  publishTelemetryThrottled(fileSize, lastPos);
 
   f.close();
   releaseBus();

@@ -295,7 +295,7 @@ absichtlich nicht eingebaut.
 
 **Der Takt kommt vom Regler, nicht vom ESP.**
 Der MULTIPLEX schreibt alle **10 Minuten** eine Zeile in `WEJJMM.DAT`
-(z. B. `WE2611.DAT` für November 2026). Der ESP schaut alle 10 Sekunden nach, ob
+(z. B. `WE2611.DAT` für November 2026). Der ESP schaut alle 20 Sekunden nach, ob
 die Datei gewachsen ist, und sendet die neue Zeile sofort. Zwischendurch passiert
 nichts — kein Polling des Reglers, keine Last auf dem Bus.
 
@@ -306,8 +306,9 @@ letzte Zeile ausgewertet, damit die Sensoren sofort gefüllt sind.
 
 **Funk nur, wenn es sein muss.**
 Messwerte gehen sofort raus, sobald eine neue Zeile da ist. Die Telemetrie
-(WLAN-Stärke, Heap, Dateigröße, Leseposition) wird dagegen nur bei Änderung oder
-alle **10 Minuten** gesendet (`TELEMETRY_INTERVAL_MS`) — der ESP funkt dazwischen gar nicht.
+(WLAN-Stärke, Heap, Dateigröße, Leseposition) dagegen nur alle **20 Minuten**
+(`TELEMETRY_MS` in `SolarLogReader.ino`). Zwischendurch geht kein MQTT-Traffic
+raus außer dem Keepalive des Brokers. Die WLAN-Verbindung selbst bleibt bestehen.
 
 **Der Bus bleibt beim Regler.**
 `CS_SENSE` (GPIO 5) geht auf LOW, wenn der Regler auf die Karte zugreift. Der ESP
