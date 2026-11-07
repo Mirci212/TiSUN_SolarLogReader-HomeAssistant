@@ -12,10 +12,10 @@
 //   25 = Energie in kWh (183297), 26 = Betriebsstunden (23977) - beide 1:1
 //   7..12 = -40 = Fuehler nicht belegt (wird nicht veroeffentlicht)
 //   13 = dT, 14 = Leistung kW (beide 0.0 am Display), 15 = P1 in %
-//   27 = 25 / 28 = 1.5 -> beide UNBEKANNT und daher nicht gemappt:
-//       Spalte 28 ist in jeder Zeile 1.5, auch wenn P1 = 0 % (Pumpe steht)
-//       und Leistung 0.0 kW ist. Ein Durchfluss muesste dann 0 sein, das
-//       Display zeigt als festen Flowmeter-Wert 6.5 -> 1.5 passt nicht.
+//   27 = Temperatur GDS1 (21 = 21 C), 28 = Durchfluss GDS1 (1.5 L/min)
+//       Gegenprobe am Geraet: Spalte 27 ist die Temperatur, Spalte 28 der
+//       Volumenstrom. divider 1 (statt 0) haelt die Nachkommastelle, sonst
+//       wuerde 1.5 zu "2" gerundet.
 //       Namen bewusst nur "Solar T1..T5", Rollen (Boiler/Puffer) stehen am
 //       Geraet auf dem Aufkleber, nicht im Sensornamen.
 //   39 = EU (Sprache), 40 = 6123 (Variante), Rest Status/Timer
@@ -54,6 +54,9 @@ static const FieldDef FIELDS[] = {
   { 13,  "dt",        "Solar dT",          "K",     1,   -35,   150,      "mdi:thermometer" },
   { 14,  "leistung",  "Solar Leistung",    "kW",    1,   0,     200,      "mdi:solar-power" },
   { 15,  "p1",        "Solar P1",          "%",     0,   0,     100,      "mdi:pump" },
+  { 16,  "p2",        "Solar P2",          "%",     0,   0,     100,      "mdi:pump" },
+  { 27,  "gds1temp",  "Solar GDS1 Temperatur", "°C",    0,   0,     100,      "mdi:thermometer" },
+  { 28,  "gds1fluss", "Solar GDS1 Durchfluss", "L/min", 1,   0,     100,      "mdi:pump" },
   { 25,  "energie",   "Solar Energie",     "kWh",   0,   0,     2000000,  "mdi:lightning-bolt" },
   { 26,  "betrieb",   "Solar Betrieb",     "h",     0,   0,     200000,   "mdi:counter" },
 };

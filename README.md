@@ -465,8 +465,9 @@ Home Assistant.
 
 - **Rückdatierung:** HA zeichnet Messwerte mit der Empfangszeit. Für exakte
   Zeitachsen braucht es InfluxDB/Grafana — der ESP liefert `meas_time` mit.
-- **Spalte 27/28** sind unbekannt (28 ist konstant `1.5`, auch bei stehender
-  Pumpe — deshalb nicht gemappt).
+- **Spalte 27/28:** Spalte 27 ist die GDS1-Temperatur (`°C`), Spalte 28 der
+  Durchfluss (`L/min`, eine Nachkommastelle). Die Zuordnung wurde gegen die
+  Anzeige des Reglers geprüft; bei anderer Firmware per `set_config` anpassen.
 - **Schreibzugriffe:** Nur der 1,5-GB-Reset und das Anlegen einer fehlenden
   Monatsdatei schreiben auf die Karte des Reglers.
 - **Andere Firmware:** Nicht jeder MULTIPLEX schreibt dieselben Spalten. Das

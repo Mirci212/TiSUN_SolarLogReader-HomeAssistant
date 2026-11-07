@@ -52,9 +52,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int len);
 void loadRuntimeFields();
 void saveRuntimeFields();
 void publishConfigState(const String& info);
+void addMissingDefaultFields();
+String lastLineOfFile();
 
 // ---------- EEPROM ----------
-#define EEPROM_SIZE 1024
+#define EEPROM_SIZE 2048
 #define EEPROM_ADDR_MAGIC 0
 #define EEPROM_ADDR_POS 1
 #define EEPROM_MAGIC 0xA5
@@ -65,7 +67,7 @@ void publishConfigState(const String& info);
 #define EEPROM_CFG_MAGIC 0xC4
 #define EEPROM_CFG_COUNT_ADDR 33
 #define EEPROM_CFG_BASE 48
-// WICHTIG: Config belegt 48 .. 1014 (14 Felder x 69 Byte).
+// WICHTIG: Config belegt 48 .. 48+20*69 = 1428 (69 Byte pro Feld).
 // linesTotal muss deshalb in den freien Bereich 5..31, sonst ueberschreibt
 // es die Feld-Config (Namen/Units kaputt).
 #define EEPROM_LINES_ADDR 8
@@ -75,7 +77,7 @@ void publishConfigState(const String& info);
 #define TAIL_CHECK_MS 10000UL
 #endif
 
-#define MAX_RT_FIELDS 14
+#define MAX_RT_FIELDS 20
 #define KEY_LEN 20
 #define NAME_LEN 36
 #define UNIT_LEN 8
@@ -237,6 +239,7 @@ void loadRuntimeFields() {
     rtFields[i] = f;
     if (f.used) rtCount = i + 1;
   }
+  addMissingDefaultFields();
   Serial.print(F("[CFG] Remote-Config geladen, Felder: "));
   Serial.println(rtCount);
 }
@@ -270,6 +273,59 @@ int findRtByIndex(uint8_t index) {
     if (rtFields[i].used && rtFields[i].index == index) return i;
   }
   return -1;
+}
+
+// Werte eines fields.h-Eintrags in einen Runtime-Slot uebernehmen.
+void applyFieldDef(RtField &f, const FieldDef &d) {
+  f.index = d.index;
+  strncpy(f.key, d.key, KEY_LEN - 1);    f.key[KEY_LEN - 1] = 0;
+  strncpy(f.name, d.name, NAME_LEN - 1); f.name[NAME_LEN - 1] = 0;
+  strncpy(f.unit, d.unit, UNIT_LEN - 1); f.unit[UNIT_LEN - 1] = 0;
+  f.divider = d.divider;
+  f.lo = d.lo;
+  f.hi = d.hi;
+  f.used = true;
+  f.disc = false;
+  f.pruned = false;
+}
+
+// Felder aus fields.h, die in der EEPROM-Config fehlen, hinten anhaengen.
+// Bisher galt: ist die Config-Magic gueltig, wird fields.h komplett ignoriert
+// -> neue Spalten kamen nach einem Sketch-Update nie an, egal wie oft man
+// flasht. Vorhandene Runtime-Namen/Teiler bleiben dabei unangetastet.
+void addMissingDefaultFields() {
+  bool changed = false;
+  for (uint8_t i = 0; i < NUM_FIELDS; i++) {
+    int pos = findRtByIndex(FIELDS[i].index);
+    if (pos >= 0) {
+      // Gleicher Index, aber anderer Key (= Spalte neu zugeordnet): fields.h
+      // gewinnt, sonst bliebe die alte Zuordnung fuer immer stehen.
+      if (strcmp(rtFields[pos].key, FIELDS[i].key) == 0) continue;
+      Serial.print(F("[CFG] Spalte "));
+      Serial.print(FIELDS[i].index);
+      Serial.print(F(" neu zugeordnet: "));
+      Serial.print(rtFields[pos].key);
+      Serial.print(F(" -> "));
+      Serial.println(FIELDS[i].key);
+      applyFieldDef(rtFields[pos], FIELDS[i]);
+      changed = true;
+      continue;
+    }
+    int freeSlot = -1;
+    for (uint8_t s = 0; s < MAX_RT_FIELDS; s++) if (!rtFields[s].used) { freeSlot = s; break; }
+    if (freeSlot < 0) {
+      Serial.println(F("[CFG] Kein freier Slot fuer neue fields.h-Felder"));
+      break;
+    }
+    applyFieldDef(rtFields[freeSlot], FIELDS[i]);
+    if (freeSlot + 1 > (int)rtCount) rtCount = freeSlot + 1;
+    Serial.print(F("[CFG] fields.h nachgetragen: "));
+    Serial.print(rtFields[freeSlot].key);
+    Serial.print(F(" = Spalte "));
+    Serial.println(FIELDS[i].index);
+    changed = true;
+  }
+  if (changed) saveRuntimeFields();
 }
 
 // ---------- Mini-JSON-Parser (ohne extra Library) ----------
@@ -358,6 +414,28 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
     publishConfigState("list");
     return;
   }
+  if (cmd == "probe") {
+    // Rohspalten der letzten Logzeile: zeigt, ob Spaltenindex und Inhalt
+    // wirklich zusammenpassen (und wie viele Spalten die Zeile hat).
+    String line = lastLineOfFile();
+    if (line.length() == 0) {
+      mqtt.publish(MQTT_TOPIC_CONFIGSTATE, "{\"error\":\"keine Zeile gelesen\"}", false);
+      return;
+    }
+    uint8_t cols = 1;
+    for (unsigned int i = 0; i < line.length(); i++) if (line[i] == ';') cols++;
+    String j = String("{\"cols\":") + String(cols);
+    for (uint8_t i = 0; i < MAX_RT_FIELDS; i++) {
+      if (!rtFields[i].used) continue;
+      String tok = getFieldToken(line, rtFields[i].index);
+      tok.trim();
+      if (tok.length() > 24) tok = tok.substring(0, 24);
+      j += String(",\"") + rtFields[i].key + "\":\"" + tok + "\"";
+    }
+    j += F(",\"info\":\"probe\"}");
+    mqtt.publish(MQTT_TOPIC_CONFIGSTATE, j.c_str(), false);
+    return;
+  }
   if (cmd == "reset") {
     // Alte Discovery-Eintraege loeschen
     for (uint8_t i = 0; i < MAX_RT_FIELDS; i++) {
@@ -403,7 +481,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
     int freeSlot = -1;
     for (uint8_t i = 0; i < MAX_RT_FIELDS; i++) if (!rtFields[i].used) { freeSlot = i; break; }
     if (freeSlot < 0) {
-      mqtt.publish(MQTT_TOPIC_CONFIGSTATE, "{\"error\":\"kein freier Slot (max 14)\"}", false);
+      mqtt.publish(MQTT_TOPIC_CONFIGSTATE, "{\"error\":\"kein freier Slot (max 20)\"}", false);
       return;
     }
     if (nkey.length() == 0) {
@@ -431,6 +509,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
     mqtt.publish(oldDisc.c_str(), "", true);
   }
   publishDiscoverySingle((uint8_t)pos);
+  // Entity ist jetzt in HA bekannt -> bei jedem Reconnect erneut anmelden
+  rtFields[pos].disc = true;
+  rtFields[pos].pruned = false;
   publishConfigState("saved");
 }
 
@@ -861,7 +942,16 @@ void publishFields(const String& clean) {
     String tok = getFieldToken(clean, f.index);
     tok.trim();
     String topic = String("home/solarlog/") + f.key;
-    if (tok.length() == 0) { clearFieldTopic(topic); continue; }
+    if (tok.length() == 0) {
+      // Spalte fehlt in der Zeile (zu wenige Semikolons) -> sichtbar machen,
+      // sonst sucht man ewig, warum ein Feld nie auftaucht.
+      Serial.print(F("[MQTT] Spalte fehlt, nicht gesendet: "));
+      Serial.print(f.key);
+      Serial.print(F(" = Spalte "));
+      Serial.println(f.index);
+      clearFieldTopic(topic);
+      continue;
+    }
     String out = tok;
     // Spalte 0 = MMDD (Datum), Spalte 1 = HHMM (Uhrzeit) -> lesbar formatieren
     bool isTimeKey = (strcmp(f.key, "uhrzeit") == 0 || strcmp(f.key, "time") == 0);
