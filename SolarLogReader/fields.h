@@ -40,21 +40,22 @@ struct FieldDef {
   float divider; // 0 = ganzzahlig roh, 1/10/... = durch diesen Wert teilen
   float lo;      // Plausibilitaet min
   float hi;      // Plausibilitaet max
+  const char* icon; // mdi-Name fuer Home Assistant ("" = kein Icon)
 };
 
 static const FieldDef FIELDS[] = {
-  { 0,  "datum",      "Solar Datum",        "",      0, 0,     0 },
-  { 1,  "uhrzeit",    "Solar Uhrzeit",      "",      0, 0,     0 },
-  { 2,  "t1",         "Solar T1",           "°C",    1, -35, 150 },
-  { 3,  "t2",         "Solar T2",           "°C",    1, -35, 150 },
-  { 4,  "t3",         "Solar T3",           "°C",    1, -35, 150 },
-  { 5,  "t4",         "Solar T4",           "°C",    1, -35, 150 },
-  { 6,  "t5",         "Solar T5",           "°C",    1, -35, 150 },
-  { 13, "dt",         "Solar dT",           "K",     1, -35, 150 },
-  { 14, "leistung",   "Solar Leistung",     "kW",    1, 0,   200 },
-  { 15, "p1",         "Solar P1",           "%",     0, 0,   100 },
-  { 25, "energie",    "Solar Energie",      "kWh",   0, 0,   2000000 },
-  { 26, "betrieb",    "Solar Betrieb",      "h",     0, 0,   200000 },
+  { 0,   "datum",     "Solar Datum",       "",      0,   0,     0,        "mdi:calendar" },
+  { 1,   "uhrzeit",   "Solar Uhrzeit",     "",      0,   0,     0,        "mdi:clock-outline" },
+  { 2,   "t1",        "Solar T1",          "°C",    1,   -35,   150,      "mdi:storage-tank" },
+  { 3,   "t2",        "Solar T2",          "°C",    1,   -35,   150,      "mdi:storage-tank" },
+  { 4,   "t3",        "Solar T3",          "°C",    1,   -35,   150,      "mdi:storage-tank" },
+  { 5,   "t4",        "Solar T4",          "°C",    1,   -35,   150,      "mdi:storage-tank" },
+  { 6,   "t5",        "Solar T5",          "°C",    1,   -35,   150,      "mdi:storage-tank" },
+  { 13,  "dt",        "Solar dT",          "K",     1,   -35,   150,      "mdi:thermometer" },
+  { 14,  "leistung",  "Solar Leistung",    "kW",    1,   0,     200,      "mdi:solar-power" },
+  { 15,  "p1",        "Solar P1",          "%",     0,   0,     100,      "mdi:pump" },
+  { 25,  "energie",   "Solar Energie",     "kWh",   0,   0,     2000000,  "mdi:lightning-bolt" },
+  { 26,  "betrieb",   "Solar Betrieb",     "h",     0,   0,     200000,   "mdi:counter" },
 };
 
 static const uint8_t NUM_FIELDS = sizeof(FIELDS) / sizeof(FIELDS[0]);

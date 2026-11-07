@@ -347,16 +347,9 @@ HA zeigt Zeitstempel in der Liste relativ an („Vor 2 Minuten", „In 35 Sekund
 Der echte Wert steht in der Detailansicht. Ein Wert „in der Zukunft" heißt nur,
 dass die Uhr des Reglers ein paar Sekunden vorgeht.
 
-**Ganze Zahlen und Icons:** Alle Messwerte gehen als ganze Zahlen raus
-(`divider: 0` in `fields.h`) — `46`, nicht `46.0`. Das Icon jedes Sensors steht
-in der Discovery-Payload (`icon`) und ist damit auch per MQTT änderbar:
-
-```json
-{"index":15,"icon":"mdi:pump"}
-```
-
-Ein geändertes Icon gilt wie `min`/`max` nur bis zum Neustart; der Standard steht
-in `fields.h`.
+**Icons:** Jeder Sensor bekommt sein `mdi:`-Icon aus `fields.h` in die
+Discovery-Payload — T1…T5 als Pufferspeicher (`mdi:storage-tank`), P1 als
+Pumpe (`mdi:pump`), Energie als Blitz (`mdi:lightning-bolt`).
 
 **Graue Sensoren sind Absicht:** `T3`/`T5` mit `199` („Außer Betrieb") oder
 `-40` (Fühler fehlt) werden nicht gesendet. Kommt der Fühler zurück, legt der
@@ -397,7 +390,7 @@ Namen und Grenzen stehen in `fields.h` und lassen sich **ohne Neufassung** per
 MQTT ändern — Topic `home/solarlog/set_config`:
 
 ```json
-{"index":4,"key":"kollektor","name":"Kollektor","unit":"°C","divider":0,"min":-35,"max":150,"icon":"mdi:storage-tank"}
+{"index":4,"key":"kollektor","name":"Kollektor","unit":"°C","divider":1,"min":-35,"max":150}
 
 {"cmd":"list"}
 {"cmd":"reset"}
@@ -409,7 +402,6 @@ MQTT ändern — Topic `home/solarlog/set_config`:
 | `key` | MQTT-Endung, nur Kleinbuchstaben/Unterstrich → `home/solarlog/<key>` |
 | `name` | Anzeigename in Home Assistant |
 | `unit` | z. B. `°C`, `%`, `kWh`, `""` |
-| `icon` | MDI-Name, z. B. `mdi:storage-tank`, `mdi:pump`, `mdi:lightning-bolt` (leer = kein Icon) |
 | `divider` | `0` = ganzzahlig, `10` = durch 10 teilen |
 | `min` / `max` | Plausibilitätsgrenzen; außerhalb wird **nicht** gesendet (nur zur Laufzeit) |
 

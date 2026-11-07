@@ -42,7 +42,6 @@ const char MQTT_TOPIC_UPTIME[] = "home/solarlog/uptime";
 const char MQTT_TOPIC_HEAP[]  = "home/solarlog/heap";
 // Messzeitpunkt aus der SD-Zeile (1106;1830 = 06.11. 18:30), nicht ESP-Lesezeit
 const char MQTT_TOPIC_MEASTIME[] = "home/solarlog/meas_time";
-const char MQTT_TOPIC_LASTLINE[] = "home/solarlog/last_line";
 
 // ---------------- SD-Karte / FYSETC SD WiFi Card Reader V2.1 ----------------
 // FYSETC: SD_CS = 4, CS_SENSE = 5.

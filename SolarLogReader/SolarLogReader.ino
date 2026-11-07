@@ -437,7 +437,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
 bool connectMqtt() {
   if (mqtt.connected()) return true;
   mqtt.setServer(MQTT_BROKER, MQTT_PORT);
-  mqtt.setBufferSize(1024);
+  mqtt.setBufferSize(2048);
   mqtt.setCallback(mqttCallback);
   Serial.print(F("[MQTT] Verbinde mit "));
   Serial.print(MQTT_BROKER);
@@ -517,6 +517,14 @@ String getFieldToken(const String& line, uint8_t wanted) {
   }
 }
 
+// Icon fuer eine Spalte aus fields.h holen ("" = kein Icon)
+const char* iconForIndex(uint8_t idx) {
+  for (uint8_t k = 0; k < NUM_FIELDS; k++) {
+    if (FIELDS[k].index == idx) return FIELDS[k].icon;
+  }
+  return "";
+}
+
 void publishDiscoverySingle(uint8_t rtIdx) {
   if (rtIdx >= MAX_RT_FIELDS || !rtFields[rtIdx].used) return;
   RtField &f = rtFields[rtIdx];
@@ -528,6 +536,10 @@ void publishDiscoverySingle(uint8_t rtIdx) {
   payload += String("\"device\":{\"identifiers\":[\"fysetc-solarlog\"],\"name\":\"Solarlog\",\"manufacturer\":\"TiSun\"},");
   if (strlen(f.unit) > 0) {
     payload += String("\"unit_of_measurement\":\"") + f.unit + "\",";
+  }
+  const char* ic = iconForIndex(f.index);
+  if (ic && ic[0]) {
+    payload += String("\"icon\":\"") + ic + "\",";
   }
   payload += String("\"value_template\":\"{{ value }}\"}");
   mqtt.publish(discTopic.c_str(), payload.c_str(), true);
@@ -681,8 +693,6 @@ void publishTelemetryDiscovery() {
   teleDisc("rssi", "Solarlog WLAN", MQTT_TOPIC_RSSI, "dBm", "signal_strength");
   teleDisc("uptime", "Solarlog Start", MQTT_TOPIC_UPTIME, "", "timestamp");
   teleDisc("heap", "Solarlog Heap", MQTT_TOPIC_HEAP, "B", "data_size");
-  // Diagnose: die Zeile, aus der die Messzeit kommt
-  teleDisc("last_line", "Solarlog Letzte Rohzeile", MQTT_TOPIC_LASTLINE, "", "");
 }
 
 void publishTelemetry(uint32_t fileSize, uint32_t lastPos) {
@@ -719,6 +729,16 @@ void publishDiscovery() {
   // Werten stehen): Zeilen-Zaehler und der falsch gemappte Durchfluss.
   mqtt.publish("homeassistant/sensor/solarlog_lines_total/config", "", true);
   mqtt.publish("homeassistant/sensor/solarlog_durchfluss/config", "", true);
+  // "Letzte Rohzeile" entfaellt -> Discovery und retained Wert loeschen
+  mqtt.publish("homeassistant/sensor/solarlog_last_line/config", "", true);
+  mqtt.publish("home/solarlog/last_line", "", true);
+  // Schon bekannte Messwert-Sensoren erneut anmelden. Sonst bleiben sie fuer
+  // immer weg, wenn jemand die Entities in HA loescht: der ESP hat sie nur
+  // einmal pro Boot geschickt (f.disc) und merkt das Loeschen nicht.
+  // Felder ohne gueltigen Wert (T3/T5 = 199) bleiben weiter aussen vor.
+  for (uint8_t i = 0; i < MAX_RT_FIELDS; i++) {
+    if (rtFields[i].used && rtFields[i].disc) publishDiscoverySingle(i);
+  }
   // Eigene IP als eigener HA-Sensor (Remote ablesbar)
   {
     String discTopic = "homeassistant/sensor/solarlog_ip/config";
@@ -821,7 +841,6 @@ void refreshFromTail() {
   lastTailLine = line;
   Serial.print(F("[SD] neue letzte Zeile: "));
   Serial.println(line);
-  mqtt.publish(MQTT_TOPIC_LASTLINE, line.c_str(), true);
   publishFields(line);
   String mt = measIsoFromLine(line);
   if (mt.length() > 0) {
@@ -905,9 +924,6 @@ void mqttPublishLine(const String& line, uint32_t pos) {
   String clean = line;
   clean.trim();
   if (clean.length() == 0) return;
-  // Rohzeile mitschicken: damit ist nachvollziehbar, woher Messzeit und
-  // Werte kommen (Spalte 0/1 = Datum/Uhrzeit).
-  mqtt.publish(MQTT_TOPIC_LASTLINE, clean.c_str(), true);
   publishFields(clean);
   String mtime = measIsoFromLine(clean);
   if (mtime.length() > 0) {
