@@ -626,6 +626,29 @@ void publishDiscoverySingle(uint8_t rtIdx) {
   if (strlen(f.unit) > 0) {
     payload += String("\"unit_of_measurement\":\"") + f.unit + "\",";
   }
+  // state_class ist die Voraussetzung fuer Langzeitstatistiken in Home Assistant.
+  // Ohne dieses Feld gibt es keine Max-/Min-/Durchschnittskarten im Dashboard
+  // (die "Puffer max"-Kachel der Waermepumpe funktioniert genau darueber).
+  if (strcmp(f.unit, "°C") == 0) {
+    payload += F("\"device_class\":\"temperature\",\"state_class\":\"measurement\",");
+  } else if (strcmp(f.unit, "K") == 0) {
+    // Bewusst OHNE device_class: HA verwirft die komplette Discovery, wenn
+    // "temperature_difference" mit Einheit K kommt -> dT bekaeme dann gar
+    // keine state_class und damit keine Statistik. Ohne device_class greift
+    // state_class und die Statistik laeuft (so am 08.11. verifiziert).
+    payload += F("\"state_class\":\"measurement\",");
+  } else if (strcmp(f.unit, "%") == 0 || strcmp(f.unit, "kW") == 0 ||
+             strcmp(f.unit, "L/min") == 0) {
+    payload += F("\"state_class\":\"measurement\",");
+  } else if (strcmp(f.unit, "h") == 0 || strcmp(f.unit, "kWh") == 0) {
+    // Zaehler (Betriebsstunden, Energie) laufen nur hoch -> total_increasing.
+    // Damit rechnet die Statistik-Karte "change" = Stunden/kWh im Zeitraum,
+    // bei measurement gaebe es nur Mittel/Max und keine Differenz.
+    if (strcmp(f.unit, "kWh") == 0) {
+      payload += F("\"device_class\":\"energy\",");
+    }
+    payload += F("\"state_class\":\"total_increasing\",");
+  }
   const char* ic = iconForIndex(f.index);
   if (ic && ic[0]) {
     payload += String("\"icon\":\"") + ic + "\",";
