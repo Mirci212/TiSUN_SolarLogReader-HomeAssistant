@@ -29,9 +29,29 @@
 // Aktuelle Monats-Datei, z.B. WE2611.DAT. Wird per NTP bestimmt.
 String currentLogFile;
 String lastActiveFile;
+// Merker vom letzten Monatswechsel: welche Datei war aktiv und bis zu welcher
+// Position war sie schon publiziert? Ohne das loescht cleanupOldMonthFiles()
+// eine alte Monatsdatei, in der noch ungesendete Zeilen stehen.
+String rotOldFile = "";
+uint32_t rotOldPos = 0;
+bool rotOldKnown = false;
+// Feste Puffer statt wachsender Strings: ESP8266-String allokiert bei jedem
+// += exakt neu. Zeichenweises Sammeln (Leseschleife, tail) hat tausende
+// Reallocs pro Minute erzeugt und den Heap so zerlegt, dass nach ~1 Tag kein
+// zusammenhaengender Block mehr frei war: lastPos blieb stehen, MQTT lebte
+// weiter, kein Neustart - exakt der taegliche Haenger. Darum hier kein Heap.
+#define LINE_BUF_SIZE 512
+char lineBuf[LINE_BUF_SIZE + 1];   // +1 fuer das Abschluss-Nullzeichen
+#define TAIL_BUF_SIZE 512
+char tailBuf[TAIL_BUF_SIZE + 1];   // +1 fuer das Abschluss-Nullzeichen
+uint32_t lastPosProgressMs = 0;   // wann kam lastPos zuletzt voran
+uint32_t lastProgressPos = 0;
+uint8_t heapLowCount = 0;
+uint32_t lastBeatMs = 0;          // letzter Heartbeat
+uint32_t mqttDownSince = 0;       // seit wann MQTT weg ist (0 = verbunden)
 
 void publishDiscovery();
-void publishDiscoverySingle(uint8_t rtIdx);
+bool publishDiscoverySingle(uint8_t rtIdx);
 void publishIp();
 void publishTelemetryDiscovery();
 void publishTelemetry(uint32_t fileSize, uint32_t lastPos);
@@ -39,13 +59,16 @@ String nowIso();
 String measIsoFromLine(const String& clean);
 uint32_t loadLinesTotal();
 void saveLinesTotal(uint32_t v);
+void rotateIfPublished(uint32_t fileSize, uint32_t lastPos);
+String firstLineOfFile();
+time_t recordTimeFromLine(const String& line);
 void setupTime();
 String monthFilenameFor(time_t t);
 String activeLogFile();
 bool isLogFile(const String& name);
 void cleanupOldMonthFiles(const String& keep);
 void updateActiveFile();
-void publishFields(const String& clean);
+bool publishFields(const String& clean);
 void refreshFromTail();
 String getFieldToken(const String& line, uint8_t wanted);
 void mqttCallback(char* topic, byte* payload, unsigned int len);
@@ -71,6 +94,18 @@ String lastLineOfFile();
 // linesTotal muss deshalb in den freien Bereich 5..31, sonst ueberschreibt
 // es die Feld-Config (Namen/Units kaputt).
 #define EEPROM_LINES_ADDR 8
+// Datei nach dem Publizieren leeren: Der ESP schickt alles per MQTT, die SD
+// muss die Daten nicht dauerhaft halten. Geleert wird nur, wenn wirklich
+// ALLES gesendet ist - und dann entweder wenn die ERSTE Zeile der Datei
+// aelter als ROTATE_AFTER_DAYS Tage ist oder die Datei ROTATE_MIN_BYTES
+// gross ist (was zuerst eintritt). Kein EEPROM-Zaehler: das Datum steht im
+// Log selbst (Spalte 0 = TTMM, Spalte 1 = HHMM).
+#ifndef ROTATE_AFTER_DAYS
+#define ROTATE_AFTER_DAYS 2
+#endif
+#ifndef ROTATE_MIN_BYTES
+#define ROTATE_MIN_BYTES (64UL * 1024UL)
+#endif
 
 // Wie oft die letzte Zeile der Datei geprueft wird (unabhaengig von lastPos).
 // 20 s statt 10 s: halbiert die SD-Zugriffe. Werte kommen trotzdem promptly an,
@@ -83,6 +118,26 @@ String lastLineOfFile();
 // gesendet wird. Vorher lief die bei jedem SD-Poll mit (~12 Publishes je Poll).
 #ifndef TELEMETRY_MS
 #define TELEMETRY_MS 1200000UL   // 20 min
+#endif
+
+// Selbstheilung: Wenn trotz bestehender MQTT-Verbindung so lange keine
+// SD-Datei mehr geoeffnet wurde, haengt die Schleife (typisch: CS_SENSE
+// dauerhaft LOW -> canTakeBus() blockt jede Runde, MQTT bleibt aber
+// verbunden und das Geraet antwortet weiter auf Ping). Neustart holt die
+// Zeilen nach, weil die Leseposition in der EEPROM steht.
+#ifndef SD_STALL_MS
+#define SD_STALL_MS 1800000UL    // 30 min
+#endif
+
+// Heartbeat + Heap-Selbstheilung (gegen den taeglichen Stillstand, siehe unten)
+#ifndef HEARTBEAT_MS
+#define HEARTBEAT_MS 300000UL        // 5 min
+#endif
+#ifndef HEAP_MIN_FREE
+#define HEAP_MIN_FREE 8192UL         // freier Heap darunter -> Neustart (laeuft auf allen Cores)
+#endif
+#ifndef MQTT_STALL_MS
+#define MQTT_STALL_MS 3600000UL     // 60 min ohne MQTT (trotz WLAN) -> Neustart
 #endif
 
 #define MAX_RT_FIELDS 20
@@ -119,6 +174,7 @@ uint32_t lastLinesSavedAt = 0;
 bool sdMounted = false;
 uint32_t sdNextTry = 0;
 uint32_t sdBackoff = 15000UL;
+uint32_t lastSdOkMs = 0;   // letzter erfolgreicher SD.open() (Selbstheilung)
 
 // ---------- Globale Objekte ----------
 WiFiClient espClient;
@@ -131,26 +187,75 @@ void ICACHE_RAM_ATTR onCsSenseFall() {
 }
 
 // ---------- WLAN ----------
+// Status-Codes beim Verbinden: 0=idle, 1=Netz nicht gefunden
+// (Kanal/Band/Reichweite!), 3=verbunden, 4=abgelehnt,
+// 5=Verbindung verloren, 6=getrennt (oft falsches Passwort).
+static uint8_t wifiFails = 0;
+
+// Diagnose bei WLAN-Ausfall: ist unser Netz ueberhaupt sichtbar?
+// Dauert ~2-3 s (blockiert), darum hoechstens alle 10 Minuten.
+void wifiScanDiagnose() {
+  static uint32_t lastScan = 0;
+  if (millis() - lastScan < 600000UL) return;
+  lastScan = millis();
+  Serial.println(F("[WiFi] Suche Netze ..."));
+  int n = WiFi.scanNetworks();
+  Serial.print(F("[WiFi] Netze gefunden: "));
+  Serial.println(n);
+  bool gesehen = false;
+  for (int i = 0; i < n; i++) {
+    String s = WiFi.SSID(i);
+    Serial.print(F("  "));
+    Serial.print(s);
+    Serial.print(F(" RSSI="));
+    Serial.print(WiFi.RSSI(i));
+    Serial.print(F(" Kanal="));
+    Serial.println(WiFi.channel(i));
+    if (s == WIFI_SSID) gesehen = true;
+    yield();
+  }
+  WiFi.scanDelete();
+  if (!gesehen) {
+    Serial.println(F("[WiFi] EIGENES NETZ NICHT SICHTBAR! Pruefen: 2,4 GHz an? Kanal 1-11? Reichweite?"));
+  } else {
+    Serial.println(F("[WiFi] Netz SICHTBAR, Anmeldung scheitert -> Passwort in secrets.h pruefen!"));
+  }
+}
+
 bool connectWifi(uint32_t timeout_ms = 20000UL) {
-  if (WiFi.status() == WL_CONNECTED) return true;
+  if (WiFi.status() == WL_CONNECTED) { wifiFails = 0; return true; }
   Serial.print(F("[WiFi] Verbinde mit "));
   Serial.println(WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.hostname("fysetc-solarlog");  // Name im Router/DHCP (frueher fuer OTA)
+  WiFi.persistent(false);             // nichts in den SDK-Flash schreiben
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   uint32_t start = millis();
+  int letzterStatus = -99;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    Serial.print(F("."));
+    int st = WiFi.status();
+    if (st != letzterStatus) {
+      Serial.print(F(" ["));
+      Serial.print(st);
+      Serial.print(F("]"));
+      letzterStatus = st;
+    } else {
+      Serial.print(F("."));
+    }
     yield();
     if (millis() - start > timeout_ms) {
-      Serial.println(F(" Timeout"));
+      Serial.print(F(" Timeout, Status="));
+      Serial.println(WiFi.status());
+      wifiFails++;
+      if (wifiFails >= 3) wifiScanDiagnose();
       return false;
     }
   }
   Serial.println();
   Serial.print(F("[WiFi] IP: "));
   Serial.println(WiFi.localIP());
+  wifiFails = 0;
   return true;
 }
 
@@ -614,8 +719,8 @@ const char* iconForIndex(uint8_t idx) {
   return "";
 }
 
-void publishDiscoverySingle(uint8_t rtIdx) {
-  if (rtIdx >= MAX_RT_FIELDS || !rtFields[rtIdx].used) return;
+bool publishDiscoverySingle(uint8_t rtIdx) {
+  if (rtIdx >= MAX_RT_FIELDS || !rtFields[rtIdx].used) return true;   // nichts zu senden = kein Fehler
   RtField &f = rtFields[rtIdx];
   String discTopic = String("homeassistant/sensor/solarlog_") + f.key + "/config";
   String stateTopic = String("home/solarlog/") + f.key;
@@ -654,11 +759,12 @@ void publishDiscoverySingle(uint8_t rtIdx) {
     payload += String("\"icon\":\"") + ic + "\",";
   }
   payload += String("\"value_template\":\"{{ value }}\"}");
-  mqtt.publish(discTopic.c_str(), payload.c_str(), true);
+  bool ok = mqtt.publish(discTopic.c_str(), payload.c_str(), true);
   Serial.print(F("[DISC] "));
   Serial.print(f.key);
   Serial.print(F(" -> "));
   Serial.println(discTopic);
+  return ok;   // FEHLTE: ohne return gab die Funktion Muell zurueck -> Werte wurden verschluckt
 }
 
 void publishIp() {
@@ -739,20 +845,41 @@ String bootIso() {
 
 // Baut aus "1106;1830;..." den echten Messzeitpunkt: 1106=MMDD, 1830=HHMM.
 // Gibt ISO zurueck, z.B. 2026-11-06T18:30:00. Jahr aus NTP, mit Jahreswechsel-Korrektur.
-String measIsoFromLine(const String& clean) {
-  String s0 = getFieldToken(clean, 0);
-  String s1 = getFieldToken(clean, 1);
-  if (s0.length() < 3 || s1.length() < 3) return String("");
+// ---------- Erste Zeile der Datei (fuer das Alter) ----------
+String firstLineOfFile() {
+  File f = SD.open(currentLogFile.c_str(), FILE_READ);
+  if (!f) return String("");
+  if (f.size() == 0) { f.close(); return String(""); }
+  String line;
+  line.reserve(200);
+  uint16_t n = 0;
+  while (f.available() && n < 200) {
+    char c = (char)f.read();
+    if (c == '\r' || c == '\n') break;
+    line += c;
+    n++;
+  }
+  f.close();
+  line.trim();
+  if (line.indexOf(';') < 0) return String("");
+  return line;
+}
+
+// Messzeit einer Logzeile als Unix-Zeit (0 = nicht lesbar).
+time_t recordTimeFromLine(const String& line) {
+  String s0 = getFieldToken(line, 0);
+  String s1 = getFieldToken(line, 1);
+  if (s0.length() < 3 || s1.length() < 3) return 0;
   // Nur Ziffern behalten (manche Regler senden "1106." o.ae.)
   String d0 = "", d1 = "";
   for (unsigned int i = 0; i < s0.length(); i++) if (isDigit(s0[i])) d0 += s0[i];
   for (unsigned int i = 0; i < s1.length(); i++) if (isDigit(s1[i])) d1 += s1[i];
-  if (d0.length() != 4 || d1.length() != 4) return String("");
+  if (d0.length() != 4 || d1.length() != 4) return 0;
   int mm = d0.substring(0, 2).toInt();
   int dd = d0.substring(2, 4).toInt();
   int hh = d1.substring(0, 2).toInt();
   int mi = d1.substring(2, 4).toInt();
-  if (mm < 1 || mm > 12 || dd < 1 || dd > 31 || hh > 23 || mi > 59) return String("");
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31 || hh > 23 || mi > 59) return 0;
   time_t now = time(nullptr);
   struct tm *tn = localtime(&now);
   int year = (tn && tn->tm_year >= 120) ? tn->tm_year + 1900 : 2026;
@@ -763,10 +890,15 @@ String measIsoFromLine(const String& clean) {
     if (curM == 12 && mm == 1) year++;
   }
   // Logzeit ist Ortszeit -> in UTC umrechnen (Sommerzeit des Messtags beachten)
-  time_t utc = (time_t)daysFromCivil(year, mm, dd) * 86400L
-             + (time_t)hh * 3600 + (time_t)mi * 60
-             - (time_t)deOffsetSec(year, mm, dd, hh);
-  return isoUtc(utc);
+  return (time_t)daysFromCivil(year, mm, dd) * 86400L
+         + (time_t)hh * 3600 + (time_t)mi * 60
+         - (time_t)deOffsetSec(year, mm, dd, hh);
+}
+
+String measIsoFromLine(const String& clean) {
+  time_t t = recordTimeFromLine(clean);
+  if (t == 0) return String("");
+  return isoUtc(t);
 }
 
 uint32_t loadLinesTotal() {
@@ -781,6 +913,38 @@ uint32_t loadLinesTotal() {
 void saveLinesTotal(uint32_t v) {
   for (uint8_t i = 0; i < 4; i++) EEPROM.write(EEPROM_LINES_ADDR + i, (v >> (i * 8)) & 0xFF);
   EEPROM.commit();
+}
+
+// Kuerzt die Monatsdatei auf 0, sobald sie komplett per MQTT raus ist.
+// FILE_WRITE (= "w") kuerzt die Datei und laesst denselben Verzeichnis-
+// eintrag stehen - kein remove(), damit dem Regler die Datei nicht unter
+// den Fuessen weggezogen wird.
+void rotateIfPublished(uint32_t fileSize, uint32_t lastPos) {
+  if (fileSize == 0 || lastPos != fileSize) return;   // noch nicht alles gesendet
+  time_t now = time(nullptr);
+  if (now < 1600000000) return;                       // kein NTP -> kein Alter
+  // Alter kommt aus dem Log selbst: die erste Zeile traegt das Datum.
+  time_t first = recordTimeFromLine(firstLineOfFile());
+  bool zuAlt = (first > 0) && (now > first) &&
+               ((uint32_t)(now - first) >= (uint32_t)ROTATE_AFTER_DAYS * 86400UL);
+  bool zuGross = (fileSize >= ROTATE_MIN_BYTES);
+  if (!zuAlt && !zuGross) return;
+
+  File w = SD.open(currentLogFile.c_str(), FILE_WRITE);
+  if (!w) {
+    Serial.println(F("[SD] Leeren fehlgeschlagen, Datei bleibt"));
+    return;
+  }
+  w.close();
+  saveReadPosition(0);
+
+  Serial.print(F("[SD] Datei geleert nach Publish, war "));
+  Serial.print(fileSize);
+  Serial.print(F(" Bytes, Grund: "));
+  Serial.println(zuGross ? F("groesse") : F("alter"));
+  String msg = String("{\"cleared\":\"") + currentLogFile + "\",\"bytes\":" + String(fileSize) +
+               ",\"reason\":\"" + (zuGross ? "size" : "age") + "\"}";
+  mqtt.publish(MQTT_TOPIC_STATUS, msg.c_str(), false);
 }
 
 void teleDisc(const char* key, const char* name, const char* stateTopic, const char* unit, const char* devClass) {
@@ -934,22 +1098,30 @@ String lastLineOfFile() {
   if (!f) return String("");
   uint32_t sz = f.size();
   if (sz == 0) { f.close(); return String(""); }
-  uint32_t start = (sz > 2048) ? sz - 2048 : 0;
+  // Nur das Schwanzende in einen FESTEN Puffer lesen (kein Heap-Wachstum).
+  uint32_t start = (sz > TAIL_BUF_SIZE) ? sz - TAIL_BUF_SIZE : 0;
   if (!f.seek(start)) { f.close(); return String(""); }
-  String tail;
-  tail.reserve(2048);
-  while (f.available()) tail += (char)f.read();
+  uint16_t n = 0;
+  while (f.available() && n < TAIL_BUF_SIZE) {
+    int ci = f.read();
+    if (ci < 0) break;
+    tailBuf[n++] = (char)ci;
+  }
   f.close();
-  // Der Regler trennt Zeilen mit CR (teils CRLF). Ohne Normalisierung fand
-  // lastIndexOf('\n') nichts und "letzte Zeile" war der ganze 2-KB-Block.
-  tail.replace("\r\n", "\n");
-  tail.replace('\r', '\n');
-  while (tail.length() > 0 && tail[tail.length() - 1] == '\n') tail.remove(tail.length() - 1);
-  int nl = tail.lastIndexOf('\n');
-  if (nl >= 0) tail = tail.substring(nl + 1);
-  tail.trim();
-  if (tail.indexOf(';') < 0) return String("");
-  return tail;
+  // Letzte Zeile = alles nach dem letzten CR/LF. Der Regler trennt mit CR
+  // (teils CRLF), darum beide als Trenner werten.
+  int end = n;
+  while (end > 0 && (tailBuf[end - 1] == '\r' || tailBuf[end - 1] == '\n')) end--;
+  if (end <= 0) return String("");
+  int begin = end;
+  while (begin > 0 && tailBuf[begin - 1] != '\r' && tailBuf[begin - 1] != '\n') begin--;
+  uint16_t len = (uint16_t)(end - begin);
+  if (len == 0 || len > 400) return String("");   // Muell, keine echte Zeile
+  tailBuf[end] = '\0';   // Platz ist da: Puffer ist TAIL_BUF_SIZE + 1
+  String line = String(tailBuf + begin);   // genau EINE Allokation
+  line.trim();
+  if (line.indexOf(';') < 0) return String("");
+  return line;
 }
 
 // Beim ersten Zugriff: letzte Zeile einmal auswerten -> sofort Werte in HA
@@ -960,10 +1132,15 @@ String lastLineOfFile() {
 void refreshFromTail() {
   String line = lastLineOfFile();
   if (line.length() == 0) return;
-  if (line == lastTailLine) return;
-  lastTailLine = line;
-  Serial.print(F("[SD] neue letzte Zeile: "));
-  Serial.println(line);
+  bool neu = (line != lastTailLine);
+  if (neu) {
+    lastTailLine = line;
+    Serial.print(F("[SD] neue letzte Zeile: "));
+    Serial.println(line);
+  }
+  // IMMER senden, nicht nur bei Aenderung: so bekommt HA auch dann frische
+  // Werte, wenn die Leseposition mal klemmt. Vorher konnte eine blockierte
+  // Position die Anzeige komplett stilllegen.
   publishFields(line);
   String mt = measIsoFromLine(line);
   if (mt.length() > 0) {
@@ -977,7 +1154,10 @@ void refreshFromTail() {
   }
 }
 
-void publishFields(const String& clean) {
+// true = alle Werte raus. false = mindestens ein Publish schlug fehl -> der
+// Aufrufer stellt die Position NICHT weiter (keine Zeile geht verloren).
+bool publishFields(const String& clean) {
+  bool ok = true;
   for (uint8_t i = 0; i < MAX_RT_FIELDS; i++) {
     if (!rtFields[i].used) continue;
     RtField &f = rtFields[i];
@@ -1016,10 +1196,17 @@ void publishFields(const String& clean) {
     }
     if (out.length() == 0) { dropField(i, tok); continue; }
     // Entity erst anlegen, wenn wirklich ein gueltiger Wert vorliegt
-    if (!f.disc) { publishDiscoverySingle(i); f.disc = true; f.pruned = false; }
+    if (!f.disc) {
+      // Die Discovery darf das Senden eines Werts NIE verhindern. Vorher stand
+      // hier ein "continue": ein fehlgeschlagenes Discovery-Publish hat damit
+      // ALLE Messwerte verschluckt - der Fehler vom 11.11. ab 16:30.
+      if (publishDiscoverySingle(i)) { f.disc = true; f.pruned = false; }
+      else ok = false;   // Wert geht trotzdem raus, Discovery naechstes Mal erneut
+    }
     // retained: sonst steht nach HA-/Broker-Neustart wieder "Unbekannt"
-    mqtt.publish(topic.c_str(), out.c_str(), true);
+    if (!mqtt.publish(topic.c_str(), out.c_str(), true)) ok = false;
   }
+  return ok;
 }
 
 // "2110" -> "21:10"   |   "1106" -> "06.11.2026"
@@ -1052,23 +1239,28 @@ String fmtDatum(const String& tok) {
   return String(buf);
 }
 
-void mqttPublishLine(const String& line, uint32_t pos) {
+// true = Zeile komplett beim Broker. false = etwas schlug fehl -> Aufrufer
+// laesst die Position stehen, die Zeile kommt naechsten Poll erneut dran.
+// Lieber doppelt als nie (fuer HA ist ein doppelter gleicher Wert harmlos).
+bool mqttPublishLine(const String& line, uint32_t pos) {
+  if (!mqtt.connected()) return false;
   String clean = line;
   clean.trim();
-  if (clean.length() == 0) return;
-  publishFields(clean);
+  if (clean.length() == 0) return true;   // nichts zu senden = kein Fehler
+  bool ok = publishFields(clean);
   String mtime = measIsoFromLine(clean);
   if (mtime.length() > 0) {
     lastMeasIso = mtime;
-    mqtt.publish(MQTT_TOPIC_MEASTIME, mtime.c_str(), true);
+    if (!mqtt.publish(MQTT_TOPIC_MEASTIME, mtime.c_str(), true)) ok = false;
   }
   linesTotal++;
   String iso = nowIso();
   if (iso.length() > 0) lastRefreshIso = iso;
   if ((linesTotal % 10) == 0) saveLinesTotal(linesTotal);
   else if (millis() - lastLinesSavedAt > 60000UL) { saveLinesTotal(linesTotal); lastLinesSavedAt = millis(); }
-  if (lastRefreshIso.length() > 0) mqtt.publish(MQTT_TOPIC_LASTREFRESH, lastRefreshIso.c_str(), true);
+  if (lastRefreshIso.length() > 0 && !mqtt.publish(MQTT_TOPIC_LASTREFRESH, lastRefreshIso.c_str(), true)) ok = false;
   String json = F("{\"raw\":\"");
+  json.reserve(320);   // ein Block statt ~8 Reallocs je Zeile
   json += clean;
   json += F("\",\"pos\":");
   json += String(pos);
@@ -1080,9 +1272,16 @@ void mqttPublishLine(const String& line, uint32_t pos) {
     Serial.println(F("[MQTT] Zeile zu lang, gekuerzt gesendet"));
     json = json.substring(0, 900) + F("\"}");
   }
-  bool ok = mqtt.publish(MQTT_TOPIC_SOLAR, json.c_str(), false);
+  if (!mqtt.publish(MQTT_TOPIC_SOLAR, json.c_str(), false)) ok = false;
   Serial.print(ok ? F("[MQTT] gesendet: ") : F("[MQTT] FEHLER bei: "));
   Serial.println(clean);
+  if (!ok) {
+    Serial.print(F("[MQTT] state="));
+    Serial.print(mqtt.state());
+    Serial.print(F(" connected="));
+    Serial.println(mqtt.connected() ? 1 : 0);
+  }
+  return ok;
 }
 
 // ---------- Datei leeren ----------
@@ -1130,12 +1329,32 @@ void cleanupOldMonthFiles(const String& keep) {
     // SD-Lib liefert teils mit / vorne
     if (n.startsWith("/")) n = n.substring(1);
     bool isDir = e.isDirectory();
+    uint32_t groesse = isDir ? 0 : e.size();
     e.close();
     if (isDir) continue;
     if (!isLogFile(n)) continue;
     // Nur Dateien AELTER als der aktuelle Monat loeschen (WEYYMM ist
     // sortierbar) - bei falscher Uhr kann so nie der neue Monat weg.
     if (n >= keep) continue;
+    // Nichts wegwerfen, was noch nicht per MQTT raus ist: geloescht wird nur
+    // eine leere Datei oder die alte Monatsdatei, die beim Wechsel komplett
+    // gelesen war (size <= gemerkte Leseposition). Sonst bleibt sie liegen.
+    bool sicher = (groesse == 0) ||
+                  (rotOldKnown && n == rotOldFile && groesse <= rotOldPos);
+    if (!sicher) {
+      Serial.print(F("[SD] Alter Monat BEHALTEN (noch nicht gesendet): "));
+      Serial.print(n);
+      Serial.print(F(" size="));
+      Serial.println(groesse);
+      static String gemeldet = "";
+      if (gemeldet != n) {
+        gemeldet = n;
+        String keepMsg = String("{\"kept\":\"") + n + "\",\"size\":" + String(groesse) + "}";
+        mqtt.publish(MQTT_TOPIC_STATUS, keepMsg.c_str(), false);
+      }
+      yield();
+      continue;
+    }
     Serial.print(F("[SD] Alter Monat, loesche: "));
     Serial.println(n);
     if (SD.remove(n.c_str())) {
@@ -1157,6 +1376,11 @@ void updateActiveFile() {
     Serial.print(currentLogFile);
     Serial.print(F(" -> "));
     Serial.println(neu);
+    // Leseposition der ALTEN Datei merken, bevor sie auf 0 gesetzt wird:
+    // der Cleanup entscheidet damit, ob die alte Datei weg darf.
+    rotOldFile = currentLogFile;
+    rotOldPos = loadReadPosition();
+    rotOldKnown = (rotOldFile.length() > 0);
     currentLogFile = neu;
     // Neue Datei = von vorn lesen
     saveReadPosition(0);
@@ -1190,6 +1414,8 @@ void setup() {
   delay(500);
   Serial.println();
   Serial.println(F("=== SolarLogReader startet (Remote-Config) ==="));
+  Serial.print(F("[SYS] Reset-Grund: "));
+  Serial.println(ESP.getResetReason());
 
   EEPROM.begin(EEPROM_SIZE);
   loadRuntimeFields();
@@ -1197,6 +1423,7 @@ void setup() {
   pinMode(CS_SENSE_PIN, INPUT_PULLUP);
   attachInterrupt(CS_SENSE_PIN, onCsSenseFall, FALLING);
 
+  WiFi.disconnect(true);   // alte AP-Daten aus dem SDK-Flash werfen (falscher Kanal!)
   connectWifi();
   setupTime();
   // Kurz auf NTP warten (max 5s), sonst Fallback-Datei
@@ -1236,10 +1463,57 @@ void loop() {
     delay(1000);
     return;
   }
+  // Heartbeat + Heap-Selbstheilung: laeuft UNABHAENGIG vom SD-Teil, damit ein
+  // stiller Tod (Heap zerlegt, Position steht, MQTT lebt) sichtbar wird und
+  // sich selbst heilt. Alle 5 min ein Lebenszeichen mit Heap-Werten.
+  if (mqtt.connected() && (millis() - lastBeatMs >= HEARTBEAT_MS)) {
+    lastBeatMs = millis();
+    uint32_t heap = ESP.getFreeHeap();   // getMaxFreeBlockSize gibt es erst in neueren Cores
+    String beat = String("{\"alive\":1,\"uptime_s\":") + String(millis() / 1000UL)        + ",\"heap\":" + String(heap)
+        + ",\"rssi\":" + String(WiFi.RSSI())
+      + ",\"pos\":" + String(loadReadPosition())
+      + "}";
+    mqtt.publish(MQTT_TOPIC_STATUS, beat.c_str(), false);
+    // Heap zerlegt? 3x hintereinander zu kleiner Block -> Neustart (Heap ist
+    // danach wieder sauber, die Position steht in der EEPROM).
+    if (heap < HEAP_MIN_FREE) {
+      if (++heapLowCount >= 3) {
+        Serial.println(F("[WDT] Heap zerlegt, Neustart zur Selbstheilung"));
+        mqtt.publish(MQTT_TOPIC_STATUS, "{\"restart\":\"heap\"}", false);
+        delay(200);
+        ESP.restart();
+      }
+    } else {
+      heapLowCount = 0;
+    }
+  }
+  // MQTT dauerhaft weg (trotz WLAN) -> Neustart, sonst bleibt alles stumm.
+  if (!mqtt.connected() && WiFi.status() == WL_CONNECTED) {
+    if (mqttDownSince == 0) mqttDownSince = millis();
+    if (millis() - mqttDownSince > MQTT_STALL_MS) {
+      Serial.println(F("[WDT] MQTT dauerhaft weg, Neustart"));
+      delay(200);
+      ESP.restart();
+    }
+  } else {
+    mqttDownSince = 0;
+  }
   if (!mqtt.connected()) {
     connectMqtt();
     delay(2000);
     if (!mqtt.connected()) return;
+  }
+
+  // Selbstheilung gegen haengende Schleifen: haengt canTakeBus() (CS_SENSE
+  // dauerhaft LOW) oder der SD-Mount, bleibt MQTT "verbunden", es kommen
+  // aber keine Werte mehr - genau das ist am 08.11. passiert (28 h Funkstille,
+  // ohne dass das Geraet neu gestartet waere).
+  if (lastSdOkMs == 0) lastSdOkMs = millis();
+  if (mqtt.connected() && (millis() - lastSdOkMs > SD_STALL_MS)) {
+    Serial.println(F("[WDT] SD haengt seit 30 min, Neustart zur Selbstheilung"));
+    mqtt.publish(MQTT_TOPIC_STATUS, "{\"restart\":\"sd_stall\"}", false);
+    delay(200);
+    ESP.restart();
   }
 
   if (millis() - lastPoll < READ_INTERVAL_MS) {
@@ -1308,8 +1582,27 @@ void loop() {
     return;
   }
 
+  lastSdOkMs = millis();
   uint32_t fileSize = f.size();
   uint32_t lastPos = loadReadPosition();
+  // Fortschritts-Waechter: Die Datei laesst sich oeffnen, aber die
+  // Leseposition kommt nicht voran (der alte SD_STALL greift hier NICHT,
+  // weil open() ja klappt). Rueckstand ohne Fortschritt -> Neustart.
+  if (fileSize > lastPos) {
+    if (lastPos != lastProgressPos) { lastProgressPos = lastPos; lastPosProgressMs = millis(); }
+    if (lastPosProgressMs == 0) lastPosProgressMs = millis();
+    if (millis() - lastPosProgressMs > SD_STALL_MS) {
+      Serial.println(F("[WDT] Leseposition steht, Neustart zur Selbstheilung"));
+      f.close();
+      releaseBus();
+      mqtt.publish(MQTT_TOPIC_STATUS, "{\"restart\":\"sd_noprogress\"}", false);
+      delay(200);
+      ESP.restart();
+    }
+  } else {
+    lastProgressPos = lastPos;
+    lastPosProgressMs = millis();
+  }
 
   Serial.print(F("[SD] size="));
   Serial.print(fileSize);
@@ -1337,8 +1630,12 @@ void loop() {
   }
 
   if (lastPos > fileSize) {
+    // Datei wurde geleert/neu angelegt (Rotation, Karte war im PC): die
+    // gemerkte Position ist veraltet und wird SOFORT vergessen - der Leser
+    // faengt wirklich bei 0 an, nicht bei der alten Zahl.
     Serial.println(F("[SD] lastPos > size, starte bei 0"));
     lastPos = 0;
+    saveReadPosition(0);
   }
 
   if (fileSize == lastPos) {
@@ -1358,27 +1655,52 @@ void loop() {
   // las deshalb die GANZE Datei als eine Zeile und lieferte nur die Spalten
   // des ersten Records. Jetzt zeichenweise lesen und an CR UND LF trennen;
   // lastPos bleibt auf der letzten vollstaendigen Zeile stehen.
+  // Zeichen in einen FESTEN Puffer sammeln: part += c hat pro Zeichen neu
+  // allokiert (bis zu 2000 Reallocs je Durchlauf) und den Heap zerlegt.
   uint8_t sent = 0;
-  String part;
+  uint16_t lineLen = 0;
+  bool lineOk = true;   // false = laenger als jede echte Zeile -> Muell
   while (f.available() && sent < MAX_LINES_PER_LOOP) {
     int ci = f.read();
     if (ci < 0) break;
     char c = (char)ci;
     if (c == '\r' || c == '\n') {
-      String rec = part;
-      part = "";
-      rec.trim();
-      if (rec.length() > 0) {
-        lastPos = f.position();
-        mqttPublishLine(rec, lastPos);
-        saveReadPosition(lastPos);
-        sent++;
+      uint32_t eol = f.position();
+      // Position nur ueber BESTAETIGTE Zeilen stellen: schlug das Senden
+      // fehl, bleibt lastPos stehen und die Zeile kommt naechsten Poll
+      // erneut dran - keine Zeile wird uebersprungen, keine geht verloren.
+      // Muell/Leerzeilen werden verbraucht, aber nie gesendet.
+      bool weiter = true;
+      if (lineOk && lineLen > 0) {
+        lineBuf[lineLen] = '\0';   // Platz ist da: Puffer ist LINE_BUF_SIZE + 1
+        String rec = lineBuf;   // genau EINE Allokation
+        rec.trim();
+        if (rec.length() > 0) {
+          if (mqttPublishLine(rec, eol)) {
+            lastPos = eol;
+            sent++;
+          } else {
+            Serial.println(F("[MQTT] Senden fehlgeschlagen, Rest naechsten Poll"));
+            weiter = false;
+          }
+        } else {
+          lastPos = eol;
+        }
+      } else {
+        lastPos = eol;
       }
+      saveReadPosition(lastPos);
+      lineLen = 0;
+      lineOk = true;
       yield();
+      if (!weiter) break;
       continue;
     }
-    part += c;
-    if (part.length() > 1500) part = "";  // Muellzeile, nicht weiter sammeln
+    if (lineLen < LINE_BUF_SIZE) {
+      lineBuf[lineLen++] = c;
+    } else {
+      lineOk = false;
+    }
     yield();
   }
 
@@ -1389,6 +1711,7 @@ void loop() {
   publishTelemetryThrottled(fileSize, lastPos);
 
   f.close();
+  rotateIfPublished(fileSize, lastPos);
   releaseBus();
   mqtt.loop();
 }
